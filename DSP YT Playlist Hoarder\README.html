@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DSP_YT-Playlist-Hoarder Documentation</title>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #333333;
+            --section-bg: #f5f5f5;
+            --button-color: #0077ee;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-color: #1a1a1a;
+                --text-color: #ffffff;
+                --section-bg: #2d2d2d;
+                --button-color: #0077ee;
+            }
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .section {
+            background-color: var(--section-bg);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        h1, h2, h3 {
+            color: var(--text-color);
+        }
+
+        .button {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: var(--button-color);
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 5px;
+            transition: opacity 0.3s;
+        }
+
+        .button:hover {
+            opacity: 0.8;
+        }
+
+        .dev-signature {
+            text-align: center;
+            padding: 20px;
+            margin-top: 40px;
+            border-top: 2px solid var(--text-color);
+        }
+
+        code {
+            background-color: var(--section-bg);
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>DSP_YT-Playlist-Hoarder</h1>
+        
+        <div class="section">
+            <h2>About</h2>
+            <p>A powerful tool for downloading and managing YouTube and Spotify content with an intuitive ASCII art interface.</p>
+        </div>
+
+        <div class="section">
+            <h2>Features</h2>
+            <ul>
+                <li>YouTube video and playlist downloads</li>
+                <li>Spotify track and playlist support</li>
+                <li>Quality selection options</li>
+                <li>Audio extraction capability</li>
+                <li>Playlist combination feature</li>
+                <li>Automatic media organization</li>
+            </ul>
+        </div>
+
+        <div class="section">
+            <h2>Installation</h2>
+            <h3>Requirements:</h3>
+            <ul>
+                <li>Python 3.7+</li>
+                <li>FFmpeg</li>
+                <li>Internet connection</li>
+            </ul>
+            <h3>Setup:</h3>
+            <code>python requirements.py</code><br>
+            <code>python youtube-playlist-hoarder.py</code>
+        </div>
+
+        <div class="section">
+            <h2>Usage</h2>
+            <ol>
+                <li>Launch the program</li>
+                <li>Paste a YouTube or Spotify URL</li>
+                <li>Select your preferred options</li>
+                <li>Wait for download to complete</li>
+            </ol>
+        </div>
+
+        <div class="dev-signature">
+            <h3>👋 Hey there! I'm KayWat</h3>
+            <p>If you find this tool helpful, consider buying me a coffee! ❤️</p>
+            <div class="coffee-buttons">
+                <a href="https://www.paypal.com/donate/?hosted_button_id=J3ABMPG6MQF3L&custom=1coffee" class="button">☕ One Coffee ($6)</a>
+                <a href="https://www.paypal.com/donate/?hosted_button_id=J3ABMPG6MQF3L&custom=2coffees" class="button">☕☕ Two Coffees ($12)</a>
+                <a href="https://www.paypal.com/donate/?hosted_button_id=J3ABMPG6MQF3L&custom=3coffees" class="button">☕☕☕ Three Coffees ($24)</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
