@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 import threading
 import tkinter as tk
 from tkinter import Tk
+import ffmpeg
 
 # Initialize colorama for Windows
 init()
@@ -150,14 +151,58 @@ def create_folders():
     for folder in folders:
         os.makedirs(folder, exist_ok=True)
 
+def sanitize_filename(title):
+    """Remove invalid characters and handle special characters/emojis"""
+    # First, handle emojis and other special unicode characters
+    title = ''.join(char for char in title if ord(char) < 65536)
+    
+    # Replace invalid characters with underscores
+    invalid_chars = r'[<>:"/\\|?*]'
+    title = re.sub(invalid_chars, '_', title)
+    
+    # Remove or replace other problematic characters
+    title = title.replace('\n', ' ').replace('\r', ' ')
+    title = re.sub(r'\s+', ' ', title).strip()
+    
+    # Ensure the title isn't empty
+    if not title:
+        title = "unnamed"
+        
+    # Limit length to avoid path length issues
+    if len(title) > 100:
+        title = title[:97] + "..."
+        
+    return title
+
 def get_output_dir(is_playlist, as_audio, playlist_name=None):
     """Determine the correct output directory based on download type"""
-    if is_playlist:
-        # Create a subfolder for this specific playlist
-        playlist_folder = os.path.join(PLAYLISTS_DIR, sanitize_filename(playlist_name))
-        os.makedirs(playlist_folder, exist_ok=True)
-        return playlist_folder
-    return SONGS_DIR if as_audio else VIDEOS_DIR
+    try:
+        if is_playlist and playlist_name:
+            # Remove problematic characters and limit length
+            safe_playlist_name = re.sub(r'[^\w\s-]', '', playlist_name)
+            safe_playlist_name = safe_playlist_name.strip()[:50]  # Limit length
+            
+            # Create base playlist directory first
+            playlist_base = os.path.join(PLAYLISTS_DIR, safe_playlist_name)
+            os.makedirs(playlist_base, exist_ok=True)
+            
+            # Then create parts directory
+            parts_dir = os.path.join(playlist_base, "parts")
+            os.makedirs(parts_dir, exist_ok=True)
+            
+            return parts_dir
+        
+        # For single files
+        base_dir = SONGS_DIR if as_audio else VIDEOS_DIR
+        parts_dir = os.path.join(base_dir, "parts")
+        os.makedirs(parts_dir, exist_ok=True)
+        return parts_dir
+        
+    except Exception as e:
+        # Fallback to a simple timestamped directory
+        fallback_dir = os.path.join(DOWNLOADS_DIR, f"download_{int(time.time())}")
+        os.makedirs(fallback_dir, exist_ok=True)
+        return fallback_dir
 
 def verify_ffmpeg():
     if not os.path.exists(FFMPEG_EXE) or not os.path.exists(FFPROBE_EXE):
@@ -172,10 +217,6 @@ def verify_ffmpeg():
         os.environ['PATH'] = FFMPEG_PATH + os.pathsep + os.environ['PATH']
     
     return FFMPEG_EXE, FFPROBE_EXE
-
-def sanitize_filename(title):
-    # Remove invalid characters from filename
-    return re.sub(r'[<>:"/\\|?*]', '', title)
 
 def get_captions(video_id):
     try:
@@ -216,33 +257,141 @@ def combine_audio_files(files, playlist_name):
         print_error(f"Error combining files: {str(e)}")
         return False
 
-def combine_video_files(files, playlist_name):
+def combine_video_files(files, output_name):
+    """Combine multiple video files into one with progress tracking"""
     try:
-        # Use playlist name for the output file
-        safe_playlist_name = sanitize_filename(playlist_name)
-        output_path = os.path.join(COMBINED_VIDEOS_DIR, f"{safe_playlist_name}.mp4")
+        if not files:
+            print_error("No files to combine")
+            return False
+            
+        # Ensure directories exist
+        combined_dir = os.path.join(DOWNLOADS_DIR, 'combined_videos', 'video')
+        os.makedirs(combined_dir, exist_ok=True)
+            
+        output_name = sanitize_filename(output_name)
+        output_file = os.path.join(combined_dir, f"{output_name}.mp4")
         
-        # Create a text file listing all input files
-        list_file = "files_to_combine.txt"
-        with open(list_file, "w", encoding='utf-8') as f:
-            for video_file in files:
-                f.write(f"file '{video_file}'\n")
+        # Verify input files
+        existing_files = [f for f in files if os.path.exists(f)]
+        if not existing_files:
+            print_error("No valid input files found")
+            return False
         
-        print(f"\nCreating combined file: {safe_playlist_name}.mp4")
+        print_progress(f"Creating combined file: {output_name}.mp4")
         
-        # Use FFmpeg to concatenate files
-        ffmpeg_exe = os.path.join(FFMPEG_PATH, 'ffmpeg.exe')
-        cmd = [
-            ffmpeg_exe, '-f', 'concat', '-safe', '0',
-            '-i', list_file, '-c', 'copy', output_path
+        # Create file list with absolute paths
+        list_file = os.path.join(DOWNLOADS_DIR, 'files_to_combine.txt')
+        with open(list_file, 'w', encoding='utf-8') as f:
+            for file in existing_files:
+                f.write(f"file '{os.path.abspath(file)}'\n")
+        
+        # FFmpeg command with simplified options
+        command = [
+            os.path.join(FFMPEG_PATH, 'ffmpeg.exe'),
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', list_file,
+            '-c', 'copy',  # Use copy instead of re-encoding
+            '-y',
+            output_file
         ]
-        subprocess.run(cmd, check=True)
         
-        # Clean up the temporary file
-        os.remove(list_file)
-        return True
+        # Start process with timeout
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1
+        )
+        
+        # Monitor progress with timeout
+        start_time = time.time()
+        last_update_time = start_time
+        timeout = 30  # Timeout in seconds for progress updates
+        
+        while process.poll() is None:
+            current_time = time.time()
+            elapsed = current_time - start_time
+            
+            # Check for timeout
+            if current_time - last_update_time > timeout:
+                process.terminate()
+                print_error("\nProcess appears to be frozen, trying alternative method...")
+                return combine_video_files_alternative(existing_files, output_name)
+            
+            # Read progress
+            line = process.stderr.readline()
+            if not line:
+                time.sleep(0.1)
+                continue
+                
+            if 'time=' in line:
+                last_update_time = current_time
+                # Extract progress info
+                time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})', line)
+                if time_match:
+                    h, m, s = map(int, time_match.groups())
+                    current_seconds = h * 3600 + m * 60 + s
+                    
+                    # Simple progress calculation
+                    print(f"\rCombining: Processing... {current_seconds}s elapsed",
+                          end='', flush=True)
+        
+        print("\n")  # New line after progress
+        
+        # Clean up
+        try:
+            os.remove(list_file)
+        except:
+            pass
+        
+        # Verify output
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            print_success("Files combined successfully")
+            return True
+        else:
+            return combine_video_files_alternative(existing_files, output_name)
+            
     except Exception as e:
-        print(f"Error combining files: {str(e)}")
+        print_error(f"Error combining files: {str(e)}")
+        return combine_video_files_alternative(existing_files, output_name)
+
+def combine_video_files_alternative(files, output_name):
+    """Alternative method for combining files using segment copying"""
+    try:
+        combined_dir = os.path.join(DOWNLOADS_DIR, 'combined_videos', 'video')
+        output_file = os.path.join(combined_dir, f"{output_name}.mp4")
+        
+        print_progress("Trying alternative combination method...")
+        
+        # Combine files by copying segments
+        with open(output_file, 'wb') as outfile:
+            for i, file in enumerate(files, 1):
+                if os.path.exists(file):
+                    file_size = os.path.getsize(file)
+                    copied = 0
+                    with open(file, 'rb') as infile:
+                        while True:
+                            chunk = infile.read(8192)
+                            if not chunk:
+                                break
+                            outfile.write(chunk)
+                            copied += len(chunk)
+                            progress = (copied / file_size) * 100
+                            print(f"\rCombining file {i}/{len(files)}: {progress:.1f}%",
+                                  end='', flush=True)
+                    print()  # New line after each file
+        
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            print_success("Files combined successfully using alternative method")
+            return True
+        else:
+            print_error("Failed to combine files using alternative method")
+            return False
+            
+    except Exception as e:
+        print_error(f"Error in alternative combination: {str(e)}")
         return False
 
 def get_video_formats(url):
@@ -329,7 +478,6 @@ def select_video_quality(url):
     for i, f in enumerate(formats, 1):
         print(f"║ {Fore.GREEN}{i:2d}{Fore.WHITE}  {f['resolution']:10} {f['ext']:8} {f['filesize']:12}  ║")
     
-    print("║                                                       ║")
     print(f"║ {Fore.GREEN}0{Fore.WHITE}   Best Quality (Automatic Selection)                  ║")
     print("╚═══════════════════════════════════════════════════════╝" + Style.RESET_ALL)
     
@@ -348,55 +496,79 @@ def select_video_quality(url):
         except ValueError:
             print_error("Please enter a number")
 
-def download_video(url, is_playlist=False, as_audio=True, playlist_name=None, format_id=None):
-    try:
-        ffmpeg_exe, ffprobe_exe = verify_ffmpeg()
-        output_dir = get_output_dir(is_playlist, as_audio, playlist_name)
-        
-        # Configure yt-dlp options with explicit FFmpeg path
-        progress_tracker = DownloadProgress()
-        ydl_opts = {
-            'format': format_id if format_id else ('bestaudio/best' if as_audio else 'bestvideo+bestaudio/best'),
-            'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
-            'quiet': False,
-            'no_warnings': True,
-            'ffmpeg_location': FFMPEG_PATH,  # Explicitly set FFmpeg path
-            'progress_hooks': [progress_tracker.progress_hook],
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }] if as_audio else [],
-        }
+def download_video(url, is_playlist=False, as_audio=True, playlist_name=None, format_id=None, retry_count=3):
+    """Download a video with retries and progress tracking"""
+    for attempt in range(retry_count):
+        try:
+            output_dir = get_output_dir(is_playlist, as_audio, playlist_name)
             
-        # Add --no-playlist flag for single video downloads
-        if '&list=' in url and not url.startswith('https://www.youtube.com/playlist'):
-            url = url.split('&list=')[0]
+            # Configure yt-dlp options
+            ydl_opts = {
+                'format': format_id if format_id else ('bestaudio/best' if as_audio else 'bestvideo+bestaudio/best'),
+                'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
+                'merge_output_format': 'mp4',
+                'writethumbnail': True,
+                'quiet': True,
+                'no_warnings': True,
+                'ffmpeg_location': FFMPEG_PATH,
+                'progress_hooks': [lambda d: print_download_progress(d)],
+                'ignoreerrors': True,
+                'nooverwrites': True,
+                'retries': 3,
+                'fragment_retries': 3,
+            }
 
-        # Download the video/audio
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info['title']
-            video_id = info['id']
-            
-            # Get the output path
-            if as_audio:
-                filename = f"{sanitize_filename(title)}.mp3"
-            else:
-                filename = f"{sanitize_filename(title)}.mp4"
-            output_path = os.path.join(output_dir, filename)
-            
-            # Download captions
-            captions = get_captions(video_id)
-            caption_path = os.path.join(output_dir, f"{sanitize_filename(title)}_captions.txt")
-            with open(caption_path, 'w', encoding='utf-8') as f:
-                f.write(captions)
+            if not as_audio:
+                # Try different format combinations if the best quality fails
+                fallback_formats = [
+                    'bestvideo+bestaudio/best',
+                    'bv*+ba/b',
+                    'b'
+                ]
                 
-            return output_path
+                if attempt > 0:
+                    ydl_opts['format'] = fallback_formats[min(attempt, len(fallback_formats)-1)]
+
+            print_progress(f"Downloading: {url} (Attempt {attempt + 1}/{retry_count})")
             
-    except Exception as e:
-        print(f"Error downloading {url}: {str(e)}")
-        return None
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    title = info.get('title', 'video')
+                    ext = 'mp3' if as_audio else 'mp4'
+                    filename = f"{sanitize_filename(title)}.{ext}"
+                    output_path = os.path.join(output_dir, filename)
+                    
+                    if os.path.exists(output_path):
+                        print_success(f"Downloaded: {filename}")
+                        return output_path
+                        
+            if attempt < retry_count - 1:
+                print_progress(f"Retrying with different format... ({attempt + 2}/{retry_count})")
+                time.sleep(1)  # Brief pause between retries
+                
+        except Exception as e:
+            if attempt < retry_count - 1:
+                print_error(f"Download failed, retrying... ({attempt + 2}/{retry_count})")
+                time.sleep(1)
+            else:
+                print_error(f"Failed to download after {retry_count} attempts: {str(e)}")
+                
+    return None
+
+def print_download_progress(d):
+    """Print download progress"""
+    if d['status'] == 'downloading':
+        try:
+            total = d.get('total_bytes', d.get('total_bytes_estimate', 0))
+            downloaded = d.get('downloaded_bytes', 0)
+            if total > 0:
+                percent = (downloaded / total) * 100
+                print(f"\rProgress: {percent:.1f}%", end='', flush=True)
+        except:
+            pass
+    elif d['status'] == 'finished':
+        print("\rDownload completed: 100%")
 
 def print_platform_menu():
     print(Fore.YELLOW + "\nSelect platform:")
@@ -552,46 +724,69 @@ def interpret_url(url):
 def process_youtube_playlist(url, combine_files=False, audio_only=False, quality='best'):
     """Process a YouTube playlist"""
     try:
-        print(Fore.YELLOW + "\n→ Processing playlist..." + Style.RESET_ALL)
-        print(Fore.YELLOW + "\n→ Fetching playlist information..." + Style.RESET_ALL)
+        print_progress("Processing playlist...")
+        print_progress("Fetching playlist information...")
         
-        # Add timeout and show progress
+        # Track successful downloads
+        downloaded_files = []
+        failed_downloads = []
+        
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': True,  # Don't download, just get info
-            'timeout': 30,  # Add timeout of 30 seconds
+            'extract_flat': True,
+            'ignoreerrors': True,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
-                print(Fore.YELLOW + "\n→ Extracting playlist details..." + Style.RESET_ALL)
+                print_progress("Extracting playlist details...")
                 playlist_info = ydl.extract_info(url, download=False)
                 
                 if not playlist_info or 'entries' not in playlist_info:
-                    print(Fore.RED + "\nError: Could not fetch playlist information" + Style.RESET_ALL)
+                    print_error("Could not fetch playlist information")
                     return
                 
-                total_videos = len(playlist_info['entries'])
-                print(Fore.GREEN + f"\nFound {total_videos} videos in playlist" + Style.RESET_ALL)
+                # Filter out None entries
+                valid_entries = [entry for entry in playlist_info['entries'] if entry is not None]
+                total_videos = len(valid_entries)
+                playlist_name = playlist_info.get('title', 'playlist')
+                
+                print_success(f"Found {total_videos} videos in playlist")
                 
                 # Process each video
-                for index, entry in enumerate(playlist_info['entries'], 1):
-                    if entry is None:  # Skip unavailable videos
-                        continue
-                    print(Fore.YELLOW + f"\n→ Processing video {index}/{total_videos}" + Style.RESET_ALL)
+                for index, entry in enumerate(valid_entries, 1):
+                    print_progress(f"Processing video {index}/{total_videos}")
                     video_url = f"https://www.youtube.com/watch?v={entry['id']}"
-                    download_video(video_url, combine_files, audio_only, quality)
+                    output_path = download_video(video_url, True, audio_only, playlist_name, quality)
                     
-            except yt_dlp.utils.DownloadError as e:
-                print(Fore.RED + f"\nError downloading playlist: {str(e)}" + Style.RESET_ALL)
+                    if output_path and os.path.exists(output_path):
+                        downloaded_files.append(output_path)
+                    else:
+                        failed_downloads.append(entry.get('title', f'Video {index}'))
+                
+                print_progress(f"Successfully downloaded: {len(downloaded_files)}/{total_videos} videos")
+                
+                # Combine files if requested and we have successful downloads
+                if combine_files and downloaded_files:
+                    print_progress("Combining files...")
+                    if audio_only:
+                        success = combine_audio_files(downloaded_files, playlist_name)
+                    else:
+                        success = combine_video_files(downloaded_files, playlist_name)
+                    
+                    if success:
+                        print_success("Files combined successfully")
+                    else:
+                        print_error("Failed to combine files")
+                
             except Exception as e:
-                print(Fore.RED + f"\nUnexpected error: {str(e)}" + Style.RESET_ALL)
+                print_error(f"Error processing playlist: {str(e)}")
                 
     except Exception as e:
-        print(Fore.RED + f"\nFailed to process playlist: {str(e)}" + Style.RESET_ALL)
+        print_error(f"Failed to process playlist: {str(e)}")
         
-    print(Fore.GREEN + "\n→ Playlist processing complete" + Style.RESET_ALL)
+    print_progress("Playlist processing complete")
 
 def create_hidden_window():
     # Create a hidden root window to handle close events
