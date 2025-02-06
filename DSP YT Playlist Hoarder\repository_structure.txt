@@ -1,0 +1,14 @@
+DSP_YT-Playlist-Hoarder/
+│
+├── src/
+│   ├── __init__.py
+│   └── youtube-playlist-hoarder.py
+│
+├── docs/
+│   ├── README.html
+│   └── README.txt
+│
+├── requirements.py
+├── .gitignore
+├── LICENSE
+└── README.md
